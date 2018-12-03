@@ -26,7 +26,7 @@ parser.add_argument('--max_epoch', type=int, default=1000,
                     help='Epoch to run [default: 10]')
 parser.add_argument('--batch_size', type=int, default=256,
                     help='Batch Size during training [default: 64]')
-parser.add_argument('--learning_rate', type=float, default=0.0003,
+parser.add_argument('--learning_rate', type=float, default=0.0001,
                     help='Initial learning rate [default: 0.0001]')
 parser.add_argument('--momentum', type=float, default=0.95,
                     help='Initial learning rate [default: 0.9]')
@@ -40,7 +40,6 @@ FLAGS = parser.parse_args()
 
 
 BATCH_SIZE = FLAGS.batch_size
-NUM_POINT = FLAGS.num_point
 MAX_EPOCH = FLAGS.max_epoch
 BASE_LEARNING_RATE = FLAGS.learning_rate
 GPU_INDEX = FLAGS.gpu
@@ -51,7 +50,8 @@ DECAY_RATE = FLAGS.decay_rate
 AUG_RATIO = 2 / float(3)
 
 DIMX = 170
-
+DIMZ = 16
+ALPHA = 46
 NUM_CLASSES = 2
 
 MODEL = importlib.import_module(FLAGS.model)  # import network module
@@ -89,8 +89,8 @@ def train():
 
             # Get model and loss
             X, end_points = MODEL.get_model(
-                features_pl, labels_pl, is_training_pl)
-            loss = MODEL.get_loss(end_points, is_labelled)
+                features_pl, labels_pl, is_training_pl, DIMZ)
+            loss = MODEL.get_loss(end_points, is_labelled, ALPHA)
             tf.summary.scalar('loss', loss)
 
             # correct = tf.equal(tf.argmax(pred, 1), tf.to_int64(labels_pl))
@@ -163,7 +163,7 @@ def train_one_epoch(sess, ops, train_writer):
     num_batches_l = math.floor(provider_m2.NUM_LABELLED/BATCH_SIZE)
     num_batches_ul = math.floor(provider_m2.NUM_UNLABELLED/BATCH_SIZE)
     num_schedule = [1 for i in range(num_batches_l)]+[0 for i in range(num_batches_ul)]
-    num_schedule = random.shuffle(num_schedule)
+    random.shuffle(num_schedule)
     list_l = list(range(provider_m2.NUM_LABELLED))
     random.shuffle(list_l)
     list_ul = list(range(provider_m2.NUM_UNLABELLED))
@@ -179,14 +179,14 @@ def train_one_epoch(sess, ops, train_writer):
             end_idx = (indx_batch_l + 1) * BATCH_SIZE
             indx = list_l[start_idx:end_idx]
             indx_batch_l += 1
-            batch_data, batch_label, is_labelled = provider_m2.sample_batch_data(True,True,indx)
+            batch_data, batch_label = provider_m2.sample_batch_data(True,True,indx)
             is_labelled = True
         else:
             start_idx = indx_batch_ul * BATCH_SIZE
             end_idx = (indx_batch_ul + 1) * BATCH_SIZE
             indx = list_ul[start_idx:end_idx]
             indx_batch_ul += 1
-            batch_data, batch_label, is_labelled = provider_m2.sample_batch_data(False, True, indx)
+            batch_data, batch_label = provider_m2.sample_batch_data(False, True, indx)
             is_labelled = False
 
         feed_dict = {ops['features']: batch_data,
@@ -244,7 +244,7 @@ def eval_one_epoch(sess, ops, test_writer):
         total_seen += BATCH_SIZE
         loss_sum += loss_val
         for i in range(BATCH_SIZE):
-            l = batch_label[i]
+            l = int(batch_label[i])
             total_seen_class[l] += 1
             total_correct_class[l] += (pred_val[i] == l)
 

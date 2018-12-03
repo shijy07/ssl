@@ -4,6 +4,7 @@ import math
 import sys
 import os
 import tf_util
+import tensorflow.contrib.layers as tcl
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
@@ -37,19 +38,11 @@ def gaussian_margin(logvar):
     return C - 0.5 * (1 + logvar)
 
 
-def placeholder_inputs_l(batch_size, dimx):
+def placeholder_inputs(batch_size, dimx):
     features_pl = tf.placeholder(tf.float32, shape=(
         batch_size, dimx))
     labels_pl = tf.placeholder(tf.int32, shape=(batch_size))
-    features_ul_pl = tf.placeholder(tf.float32, (
-        batch_size, dimx))
     return features_pl, labels_pl
-
-
-def placeholder_inputs_ul(batch_size, dimx):
-    features_ul_pl = tf.placeholder(tf.float32, (
-        batch_size, dimx))
-    return features_ul_pl
 
 
 def get_model(X, y, is_training, dim_z, bn_decay=None):
@@ -57,9 +50,11 @@ def get_model(X, y, is_training, dim_z, bn_decay=None):
     batch_size = X.get_shape()[0].value
     dimx = X.get_shape()[1].value
     end_points = {}
-
+    end_points['y_ori'] = y
+    y = tcl.one_hot_encoding(y, 2)
     # Build network for q(z|x,y)
     input_xy = tf.concat([X, y], axis=1)
+    end_points['y'] = y
     encoder_out_zx_l1 = tf_util.fully_connected(
         input_xy, 64, scope='encoder_zx_fc1', activation_fn=tf.nn.softplus)
     encoder_out_zx_l2 = tf_util.fully_connected(
@@ -77,7 +72,7 @@ def get_model(X, y, is_training, dim_z, bn_decay=None):
     # sample from gaussian distribution for z
     eps = tf.random_normal(
         tf.stack([tf.shape(X)[0], dim_z]), 0, 1, dtype=tf.float32)
-    z_sample = tf.add(z_mu, tf.multiply(tf.sqrt(tf.exp(dim_z)), eps))
+    z_sample = tf.add(z_mu, tf.multiply(tf.sqrt(tf.exp(z_lsgms)), eps))
 
 
     y_sample = y_pred
@@ -94,29 +89,29 @@ def get_model(X, y, is_training, dim_z, bn_decay=None):
     end_points['z_lsgms'] = z_lsgms
     end_points['x'] = X
     end_points['x_recon'] = recon_X
-    if is_training:
-        return recon_X, end_points
-    else:
-        return y_pred, end_points
+    return recon_X, end_points
 
 
-def get_loss(end_points, is_labelled):
+
+def get_loss(end_points, is_labelled, alpha):
     x = end_points['x']
     x_ = end_points['x_recon']
-    reconstr_loss = tf.reduce_sum(x * tf.log(x_) + (1 - x) * tf.log(1 - x_), 1)
+    reconstr_loss = tf.reduce_mean(tf.reduce_sum(x * tf.log(x_) + (1 - x) * tf.log(1 - x_), 1))
     mu = end_points['z_mu']
     sigma = end_points['z_lsgms']
-    KL_divergence = 0.5 * tf.reduce_sum(tf.square(mu)
+    KL_divergence = tf.reduce_mean(0.5 * tf.reduce_sum(tf.square(mu)
                                         + tf.square(sigma)
-                                        - tf.log(1e-8 + tf.square(sigma)) - 1, 1)
+                                        - tf.log(1e-8 + tf.square(sigma)) - 1, 1))
+    print(KL_divergence)
+    ELBO_ul = KL_divergence-reconstr_loss
+    print(ELBO_ul)
+    classifier_loss = tf.cond(is_labelled, lambda:tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
+            logits=end_points['y_pred'], labels=end_points['y_ori'])), lambda:tf.zeros(1))
+    vae_loss = tf.cond(is_labelled, lambda:tf.add(ELBO_ul, alpha *classifier_loss), lambda:ELBO_ul)
 
-    ELBO_ul = tf.reduce_mean(KL_divergence-reconstr_loss)
-    if is_labelled:
-        vae_loss = None
-    else:
-        vae_loss = ELBO_ul
     with tf.name_scope('summaries'):
-        tf.summary.scalar('reconstruct_loss', reconstr_loss)
-        tf.summary.scalar('latent_loss_zx', KL_divergence)
-        tf.summary.scalar('ELBO_ul', ELBO_ul)
+        tf.summary.scalar('reconstruct_loss', tf.squeeze(reconstr_loss))
+        tf.summary.scalar('KL_divergence', tf.squeeze(KL_divergence))
+        tf.summary.scalar('ELBO_ul', tf.squeeze(ELBO_ul))
+        tf.summary.scalar('classifier_loss', tf.squeeze(classifier_loss))
     return vae_loss
